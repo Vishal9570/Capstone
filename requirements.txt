@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+streamlit
+httpx
+python-dotenv
+pydantic
+openai
+pandas
+groq
+anthropic
+cohere
+google-generativeai
+prometheus-client
+APScheduler
+pytest
