@@ -30,7 +30,7 @@ jobs:
       - name: Run tests
         run: |
           pip install pytest
-          pytest tests/ -v
+	  python -m pytest tests/ -v
 
   deploy:
     needs: build-test
