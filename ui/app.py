@@ -309,15 +309,7 @@ def _ensure_remark_column(events):
     return normalized
 
 
-# for key, value in {"logged_in": False, "user": None, "auth_page": "signup", "latest_plan_id": None}.items():
-#     if key not in st.session_state:
-#         st.session_state[key] = value
 
-# if st.sidebar.button("Reset App / Logout"):
-#     st.session_state.logged_in = False
-#     st.session_state.user = None
-#     st.session_state.auth_page = "signup"
-#     st.rerun()
 
 
 # Initialize session state
@@ -424,129 +416,7 @@ with st.sidebar:
         st.session_state.latest_plan_id = None
         st.rerun()
 
-#if page == "ðŸ“… Day Planner":
-    # st.title("ðŸ“… Generate My Day Plan")
-    # st.caption("Agent 1 creates the plan, Agent 2 analyses history, Agent 3 adds safety/fallback suggestions.")
-    # c1, c2 = st.columns(2)
-    # wake_time = c1.time_input("Wake-up time")
-    # sleep_time = c2.time_input("Sleep time")
-    # diet_type = st.selectbox("Diet Preference", ["Veg", "Non-Veg"])
-    # fitness_type = st.selectbox("Fitness Preference", ["Gym", "Yoga", "Both"])
-    # workout_duration = st.selectbox("Workout Duration", ["1 hr", "1.5 hr", "2 hr"])
-    # preferences_text = st.text_area("Extra Preferences", placeholder="Example: office 9 to 6, avoid rice at night, evening gym")
-    # if st.button("âœ¨ Generate My Day Plan", type="primary", use_container_width=True):
-    #     with st.spinner("Multi-agent system is generating your plan..."):
-    #         result = api_post("/planner/generate", {"user_id": user["id"], "wake_time": wake_time.strftime("%H:%M"), "sleep_time": sleep_time.strftime("%H:%M"), "diet_type": diet_type, "fitness_type": fitness_type, "workout_duration": workout_duration, "phone": phone or None, "preferences": {"notes": preferences_text}})
-    #     if result.get("events"):
-    #         st.session_state.latest_plan_id = result.get("plan_id")
-    #         st.success("Day plan generated successfully.")
-    #         st.subheader("Your Day Plan")
-    #         st.dataframe(pd.DataFrame(result["events"]), use_container_width=True)
-    #         st.subheader("Agent Output")
-    #         st.json(result.get("agent_analysis", {}))
-    #         st.subheader("Notification")
-    #         st.json(result.get("notification", {}))
 
-# if page == "ðŸ“… Day Planner":
-#     st.title("ðŸ“… Generate My Day Plan")
-#     st.caption("Agent 1 creates the plan. Validator checks wake/sleep constraint. User can edit and update plan.")
-
-#     c1, c2 = st.columns(2)
-#     wake_time = c1.time_input("Wake-up time")
-#     sleep_time = c2.time_input("Sleep time")
-
-#     diet_type = st.selectbox("Diet Preference", ["Veg", "Non-Veg"])
-#     fitness_type = st.selectbox("Fitness Preference", ["Gym", "Yoga", "Both"])
-#     workout_duration = st.selectbox("Workout Duration", ["1 hr", "1.5 hr", "2 hr"])
-
-#     preferences_text = st.text_area(
-#         "Extra Preferences",
-#         placeholder="Example: office 9 to 6, avoid rice at night, evening gym"
-#     )
-
-#     wake_str = wake_time.strftime("%H:%M")
-#     sleep_str = sleep_time.strftime("%H:%M")
-
-#     if "current_events" not in st.session_state:
-#         st.session_state.current_events = []
-
-#     if st.button("âœ¨ Generate My Day Plan", type="primary", use_container_width=True):
-#         with st.spinner("Multi-agent system is generating your plan..."):
-#             result = api_post(
-#                 "/planner/generate",
-#                 {
-#                     "user_id": user["id"],
-#                     "wake_time": wake_str,
-#                     "sleep_time": sleep_str,
-#                     "diet_type": diet_type,
-#                     "fitness_type": fitness_type,
-#                     "workout_duration": workout_duration,
-#                     "phone": phone or None,
-#                     "preferences": {
-#                         "notes": preferences_text
-#                     }
-#                 }
-#             )
-
-#         if result.get("events"):
-#             st.session_state.latest_plan_id = result.get("plan_id")
-#             st.session_state.current_events = result["events"]
-
-#             st.success("Day plan generated successfully.")
-
-#             if result.get("validation_errors"):
-#                 st.warning("Some validation warnings found:")
-#                 st.write(result["validation_errors"])
-
-#             #st.subheader("Agent Output")
-#             #st.json(result.get("agent_analysis", {}))
-# #
-#             #st.subheader("Notification")
-#             #st.json(result.get("notification", {}))
-
-#     if st.session_state.current_events:
-#         st.subheader("Your Editable Day Plan")
-
-#         df = pd.DataFrame(st.session_state.current_events)
-
-#         edited_df = st.data_editor(
-#             df,
-#             use_container_width=True,
-#             num_rows="dynamic",
-#             key="editable_day_plan"
-#         )
-
-#         if st.button("ðŸ”„ Update My Day Plan", use_container_width=True):
-#             updated_events = edited_df.to_dict("records")
-
-#             with st.spinner("Updating your day plan..."):
-#                 update_result = api_post(
-#                     "/planner/update",
-#                     {
-#                         "user_id": user["id"],
-#                         "plan_id": st.session_state.latest_plan_id,
-#                         "wake_time": wake_str,
-#                         "sleep_time": sleep_str,
-#                         "diet_type": diet_type,
-#                         "fitness_type": fitness_type,
-#                         "workout_duration": workout_duration,
-#                         "events": updated_events
-#                     }
-#                 )
-
-#             if update_result.get("events"):
-#                 st.session_state.current_events = update_result["events"]
-#                 st.success("Day plan updated successfully.")
-
-#                 if update_result.get("validation_errors"):
-#                     st.warning("Validation warnings:")
-#                     st.write(update_result["validation_errors"])
-
-#                 st.subheader("Updated Plan")
-#                 st.dataframe(
-#                     pd.DataFrame(update_result["events"]),
-#                     use_container_width=True
-#                 )
 
 if page in ("Dashboard", "Day Planner"):
     hero_banner(
@@ -575,10 +445,7 @@ if page in ("Dashboard", "Day Planner"):
     st.session_state.wake_time_value = wake_time
     st.session_state.sleep_time_value = sleep_time
 
-    # office_time = st.text_input(
-    #     "Office / Work Time",
-    #     placeholder="Example: I am in office 9 AM to 7 PM"
-    # )
+    
 
     st.subheader("Work Schedule")
 
@@ -649,23 +516,8 @@ if page in ("Dashboard", "Day Planner"):
                 st.write(f"- {msg}")
             st.stop()
 
-        # result = api_post(
-        #     "/planner/generate",
-            # {
-            #     "user_id": user["id"],
-            #     "wake_time": wake_str,
-            #     "sleep_time": sleep_str,
-            #     "diet_type": diet_type,
-            #     "fitness_type": fitness_type,
-            #     "workout_duration": workout_duration,
-            #     "phone": phone or None,
-            #     "preferences": {
-            #         "notes": preferences_text,
-            #         "office_time": office_time
-            #     }
-            # }
-
-        # )
+      
+        
         result = api_post(
             "/planner/generate",
             {
@@ -778,6 +630,79 @@ if page in ("Dashboard", "Day Planner"):
                 st.rerun()
         if c2.button("Cancel Edit", use_container_width=True):
             st.session_state.current_events = _ensure_remark_column(st.session_state.current_events)
+            st.rerun()
+
+elif page == "Profile":
+    st.title("👤 Edit Profile")
+    st.caption("Update your health and lifestyle profile. Future day plans will use this updated data.")
+
+    current_diseases = user.get("diseases") or ""
+    current_diseases_list = [
+        d.strip() for d in current_diseases.split(",") if d.strip()
+    ]
+
+    with st.form("profile_update_form"):
+        c1, c2 = st.columns(2)
+
+        phone_new = c1.text_input("Phone Number", value=user.get("phone") or "")
+        profession_new = c2.text_input("Profession", value=user.get("profession") or "")
+
+        height_new = c1.number_input(
+            "Height (cm)",
+            50.0,
+            250.0,
+            float(user.get("height") or 170.0),
+        )
+
+        weight_new = c2.number_input(
+            "Weight (kg)",
+            20.0,
+            200.0,
+            float(user.get("weight") or 70.0),
+        )
+
+        age_new = c1.number_input(
+            "Age",
+            10,
+            100,
+            int(user.get("age") or 25),
+        )
+
+        diseases_new = st.multiselect(
+            "Diseases",
+            ["None", "BP", "Sugar", "Heart", "Asthma", "Thyroid"],
+            default=current_diseases_list if current_diseases_list else ["None"],
+        )
+
+        disability_new = st.text_input(
+            "Disability, if any",
+            value=user.get("disability") or "",
+        )
+
+        submitted = st.form_submit_button(
+            "💾 Update Profile",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if submitted:
+        result = api_post(
+            "/profile/update",
+            {
+                "user_id": user["id"],
+                "phone": phone_new,
+                "height": height_new,
+                "weight": weight_new,
+                "age": int(age_new),
+                "profession": profession_new,
+                "diseases": diseases_new,
+                "disability": disability_new,
+            },
+        )
+
+        if result.get("user"):
+            st.session_state.user = result["user"]
+            st.success("Profile updated successfully.")
             st.rerun()
 elif page == "History":
     st.title("History")
