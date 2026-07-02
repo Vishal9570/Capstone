@@ -755,3 +755,4 @@
 {"ts": "2026-07-02T11:28:17", "level": "INFO", "logger": "capstone", "message": "observability_initialized"}
 {"ts": "2026-07-02T11:28:27", "level": "INFO", "logger": "capstone", "message": "http_request", "request_id": "a35e1eb844e2", "method": "POST", "path": "/auth/login", "status_code": 200, "duration_ms": 12.42, "client_ip": "127.0.0.1"}
 {"ts": "2026-07-02T11:36:20", "level": "INFO", "logger": "capstone", "message": "observability_initialized"}
+{"ts": "2026-07-02T12:49:00", "level": "INFO", "logger": "capstone", "message": "observability_initialized"}

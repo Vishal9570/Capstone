@@ -704,6 +704,7 @@ elif page == "Profile":
             st.session_state.user = result["user"]
             st.success("Profile updated successfully.")
             st.rerun()
+            
 elif page == "History":
     st.title("History")
     st.caption("Review your previous day plans and saved context.")
