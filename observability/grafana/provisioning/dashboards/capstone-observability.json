@@ -35,6 +35,71 @@
       ]
     },
     {
+      "type": "timeseries",
+      "title": "Agent 1 Latency",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(capstone_agent_duration_seconds_bucket{agent=\"agent1\"}[5m])) by (le))",
+          "legendFormat": "agent1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent 2 Latency",
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(capstone_agent_duration_seconds_bucket{agent=\"agent2\"}[5m])) by (le))",
+          "legendFormat": "agent2",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent 3 Latency",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(capstone_agent_duration_seconds_bucket{agent=\"agent3\"}[5m])) by (le))",
+          "legendFormat": "agent3",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent 4 Latency",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(capstone_agent_duration_seconds_bucket{agent=\"agent4\"}[5m])) by (le))",
+          "legendFormat": "agent4",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent-wise Response Time",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 30 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(capstone_agent_duration_seconds_bucket[5m])) by (le, agent))",
+          "legendFormat": "{{agent}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "type": "stat",
       "title": "Active Requests",
       "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 },
@@ -62,7 +127,7 @@
     {
       "type": "logs",
       "title": "Recent Application Logs",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 14 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 38 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {

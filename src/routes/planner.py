@@ -12,11 +12,12 @@ from src.agents.agent2_preference_verifier import verify_plan_with_agent2
 from src.models import FinalizePlanRequest
 from src.agents.agent2_finalizer import finalize_plan_with_agent2
 from src.agents.agent3_validator import validate_final_plan
-from src.observability import record_plan_event
+from src.observability import record_plan_event, track_agent_latency
 from src.services.schedule_builder import (
     parse_office_time,
     validate_awake_office_alignment,
     awake_window_bounds,
+    to_minutes,
 )
 router = APIRouter(tags=["Planner"])
 
@@ -54,6 +55,150 @@ def _build_correction_prompt(events, extra_preferences=None, user_change_reason=
     )
 
 
+def _detect_reading_genre(text: str):
+    lowered = f" {text or ''} ".lower()
+    genre_keywords = {
+        "science fiction": ["science fiction", "sci-fi", "scifi", "sci fi"],
+        "horror": ["horror", "scary", "ghost", "ghost story", "thriller", "spooky", "haunted", "dark"],
+        "comedy": ["comedy", "funny", "humor", "humour", "comic", "laugh", "light-hearted", "satire"],
+        "romance": ["romance", "romantic", "love story", "love"],
+        "mystery": ["mystery", "mystery novel", "detective", "whodunit", "crime", "suspense"],
+        "fiction": ["fiction", "fictional", "novel", "fantasy", "adventure", "literary"],
+    }
+    best_genre = ""
+    best_index = None
+    for genre, keywords in genre_keywords.items():
+        for keyword in keywords:
+            index = lowered.find(f" {keyword.lower()} ")
+            if index == -1:
+                continue
+            if best_index is None or index < best_index:
+                best_genre = genre
+                best_index = index
+    return best_genre
+
+
+def _reading_preference_from_events(events, extra_preferences=None, user_change_reason=""):
+    pieces = []
+    for event in events or []:
+        if str(event.get("category", "")).lower() == "reading":
+            pieces.append(str(event.get("remark", "") or ""))
+            pieces.append(str(event.get("activity", "") or ""))
+    if extra_preferences:
+        pieces.append(str(extra_preferences.get("notes", "") or ""))
+        pieces.append(str(extra_preferences.get("reading_preference", "") or ""))
+    if user_change_reason:
+        pieces.append(user_change_reason)
+
+    detected = _detect_reading_genre(" ".join(pieces))
+    return detected
+
+
+def _diet_bans(diet_type: str):
+    diet = str(diet_type or "").strip().lower()
+    if diet == "vegan":
+        return [
+            "chicken",
+            "egg",
+            "fish",
+            "mutton",
+            "meat",
+            "milk",
+            "curd",
+            "yogurt",
+            "paneer",
+            "ghee",
+            "butter",
+            "cheese",
+            "cream",
+            "buttermilk",
+            "whey",
+            "honey",
+            "omelette",
+            "omelet",
+        ]
+    if diet == "veg":
+        return ["chicken", "egg", "fish", "mutton", "meat"]
+    return []
+
+
+def _time_to_minutes(time_text: str):
+    try:
+        hour, minute = str(time_text or "").split(":")
+        return int(hour) * 60 + int(minute)
+    except Exception:
+        return None
+
+
+def _office_bounds_minutes(office_time: str):
+    office = parse_office_time(office_time)
+    if not office:
+        return None, None
+    office_start = to_minutes(office["start"])
+    office_end = to_minutes(office["end"])
+    if office_end <= office_start:
+        office_end += 24 * 60
+    return office_start, office_end
+
+
+def _shift_event_outside_office(event, office_start: int, office_end: int, wake_minutes: int, sleep_minutes: int):
+    duration = int(event.get("duration_minutes") or 30)
+    event_minutes = _time_to_minutes(event.get("time", ""))
+    if event_minutes is None:
+        return event, False
+
+    before_candidate = max(wake_minutes, office_start - duration - 15)
+    after_candidate = min(max(office_end + 30, office_start + 30), sleep_minutes - duration)
+
+    before_ok = before_candidate + duration <= office_start
+    after_ok = after_candidate + duration <= sleep_minutes
+
+    if before_ok:
+        shifted = dict(event)
+        shifted["time"] = f"{before_candidate // 60:02d}:{before_candidate % 60:02d}"
+        return shifted, True
+    if after_ok:
+        shifted = dict(event)
+        shifted["time"] = f"{after_candidate // 60:02d}:{after_candidate % 60:02d}"
+        return shifted, True
+
+    return event, False
+
+
+def _skip_office_overlaps(events, office_time: str, wake_time: str, sleep_time: str, workout_timing: str = ""):
+    office_start, office_end = _office_bounds_minutes(office_time)
+    if office_start is None or office_end is None:
+        return events, []
+
+    wake_minutes, sleep_minutes = awake_window_bounds(wake_time, sleep_time)
+    kept_events = []
+    skipped_labels = []
+    shifted_labels = []
+
+    for event in events or []:
+        category = str(event.get("category", "")).lower()
+        event_minutes = _time_to_minutes(event.get("time", ""))
+        if event_minutes is None:
+            kept_events.append(event)
+            continue
+
+        comparison_minutes = event_minutes
+        if office_end > 24 * 60 and comparison_minutes < office_start:
+            comparison_minutes += 24 * 60
+
+        if category == "workout" and office_start <= comparison_minutes <= office_end:
+            skipped_labels.append(f"{event.get('activity')} at {event.get('time')}")
+            continue
+
+        kept_events.append(event)
+
+    if not skipped_labels and not shifted_labels:
+        return kept_events, []
+
+    message = "Your workout was adjusted to fit your work hours."
+    return kept_events, [message]
+
+
 @router.post("/planner/generate")
 def generate_plan(req: DayPlanRequest):
     user = get_user_by_id(req.user_id)
@@ -83,6 +228,9 @@ def generate_plan(req: DayPlanRequest):
         "extra_preferences": req.preferences or {},
     }
     prefs["extra_preferences"].setdefault("workout_timing", prefs["extra_preferences"].get("gym_preference", "Flexible"))
+    reading_preference = _reading_preference_from_events([], prefs["extra_preferences"], "")
+    if reading_preference:
+        prefs["extra_preferences"]["reading_preference"] = reading_preference
 
     office_time = prefs["extra_preferences"].get("office_time", "")
     if not office_time:
@@ -102,10 +250,12 @@ def generate_plan(req: DayPlanRequest):
         )
 
     # Agent 2: history analysis
-    analysis = analyse_user_history(req.user_id)
+    with track_agent_latency("agent2", "analysis"):
+        analysis = analyse_user_history(req.user_id)
 
     # Agent 3: fallback / safety suggestions
-    fallback = fallback_suggestions(profile, prefs)
+    with track_agent_latency("agent3", "fallback"):
+        fallback = fallback_suggestions(profile, prefs)
 
     # Pass Agent 2 and Agent 3 context forward to Agent 1.
     prefs["analysis_context"] = analysis
@@ -119,27 +269,36 @@ def generate_plan(req: DayPlanRequest):
     #     fallback
     # )
 
-    plan_payload = generate_day_plan_with_gpt(
-        profile,
-        prefs,
-        analysis,
-        fallback,
-        return_metadata=True,
-    )
-    events = plan_payload["events"]
-    health_tip = plan_payload.get("health_tip", "")
-
-    verification = verify_plan_with_agent2(profile, prefs, events)
-
-    if not verification.get("is_valid"):
+    with track_agent_latency("agent1", "generation"):
         plan_payload = generate_day_plan_with_gpt(
             profile,
             prefs,
             analysis,
             fallback,
-            correction_prompt=verification.get("correction_prompt", ""),
             return_metadata=True,
         )
+    events = plan_payload["events"]
+    health_tip = plan_payload.get("health_tip", "")
+    events, overlap_warnings = _skip_office_overlaps(
+        events,
+        office_time,
+        req.wake_time,
+        req.sleep_time,
+        prefs["extra_preferences"].get("workout_timing", ""),
+    )
+
+    verification = verify_plan_with_agent2(profile, prefs, events)
+
+    if not verification.get("is_valid"):
+        with track_agent_latency("agent1", "generation"):
+            plan_payload = generate_day_plan_with_gpt(
+                profile,
+                prefs,
+                analysis,
+                fallback,
+                correction_prompt=verification.get("correction_prompt", ""),
+                return_metadata=True,
+            )
         events = plan_payload["events"]
         health_tip = plan_payload.get("health_tip", health_tip)
 
@@ -164,7 +323,8 @@ def generate_plan(req: DayPlanRequest):
     record_plan_event(user.get("profession"), "generated", signal="generated")
 
     # Agent 4: desktop notification scheduler
-    notification_result = schedule_day_plan(events)
+    with track_agent_latency("agent4", "notification"):
+        notification_result = schedule_day_plan(events)
 
     # Optional SMS placeholder
     sms_notification = schedule_optional_sms(req.phone, events)
@@ -192,6 +352,8 @@ def generate_plan(req: DayPlanRequest):
         "date": str(date.today()),
         "user_id": req.user_id,
         "events": events,
+        "message": overlap_warnings[0] if overlap_warnings else "Plan generated successfully.",
+        "warnings": overlap_warnings,
         "agent_analysis": {
             "agent1": "OpenAI if configured, otherwise Gemini/local fallback",
             "agent2": analysis,
@@ -275,15 +437,15 @@ def validate_plan_constraints(events, wake_time, sleep_time, diet_type, office_t
 
         activity = str(event.get("activity", "")).lower()
 
-        if diet_type == "Veg":
-            non_veg_words = ["chicken", "egg", "fish", "mutton", "meat"]
-            for word in non_veg_words:
-                if word in activity:
-                    errors.append(
-                        f"Non-veg item '{word}' found in Veg plan: {event.get('activity')}"
-                    )
+        diet_label = str(diet_type or "").strip().lower()
+        for word in _diet_bans(diet_label):
+            if word in activity:
+                label = "Vegan" if diet_label == "vegan" else "Veg"
+                errors.append(
+                    f"{label} item '{word}' found in {label} plan: {event.get('activity')}"
+                )
 
-        if office and event.get("category") in {"meal", "workout", "reading", "meditation"}:
+        if office and event.get("category") == "workout":
             if (
                 normalized_office_start is not None
                 and normalized_office_end is not None
@@ -325,6 +487,9 @@ def update_plan(req: UpdatePlanRequest):
         "extra_preferences": getattr(req, "preferences", {}) or {},
     }
     prefs["extra_preferences"].setdefault("workout_timing", prefs["extra_preferences"].get("gym_preference", "Flexible"))
+    reading_preference = _reading_preference_from_events(req.events, prefs["extra_preferences"], "")
+    if reading_preference:
+        prefs["extra_preferences"]["reading_preference"] = reading_preference
 
     office_time = prefs["extra_preferences"].get("office_time", "")
     if not office_time:
@@ -342,23 +507,33 @@ def update_plan(req: UpdatePlanRequest):
             },
         )
 
-    analysis = analyse_user_history(req.user_id)
-    fallback = fallback_suggestions(profile, prefs)
+    with track_agent_latency("agent2", "analysis"):
+        analysis = analyse_user_history(req.user_id)
+    with track_agent_latency("agent3", "fallback"):
+        fallback = fallback_suggestions(profile, prefs)
     correction_prompt = _build_correction_prompt(req.events)
     events = req.events
     health_tip = fallback.get("health_tip", "")
 
     if correction_prompt:
-        plan_payload = generate_day_plan_with_gpt(
-            profile,
-            prefs,
-            analysis,
-            fallback,
-            correction_prompt=correction_prompt,
-            return_metadata=True,
-        )
+        with track_agent_latency("agent1", "generation"):
+            plan_payload = generate_day_plan_with_gpt(
+                profile,
+                prefs,
+                analysis,
+                fallback,
+                correction_prompt=correction_prompt,
+                return_metadata=True,
+            )
         events = plan_payload["events"]
         health_tip = plan_payload.get("health_tip", health_tip)
+    events, overlap_warnings = _skip_office_overlaps(
+        events,
+        office_time,
+        req.wake_time,
+        req.sleep_time,
+        prefs["extra_preferences"].get("workout_timing", ""),
+    )
 
     validation_errors = validate_plan_constraints(
         events,
@@ -402,6 +577,7 @@ def update_plan(req: UpdatePlanRequest):
         "new_plan_id": plan_id,
         "user_id": req.user_id,
         "events": events,
+        "warnings": overlap_warnings,
         "validation_errors": validation_errors
     }
 
@@ -434,6 +610,9 @@ def finalize_plan(req: FinalizePlanRequest):
         "extra_preferences": req.preferences or {},
     }
     prefs["extra_preferences"].setdefault("workout_timing", prefs["extra_preferences"].get("gym_preference", "Flexible"))
+    reading_preference = _reading_preference_from_events(req.events, prefs["extra_preferences"], prefs["extra_preferences"].get("user_change_reason", ""))
+    if reading_preference:
+        prefs["extra_preferences"]["reading_preference"] = reading_preference
 
     office_time = prefs["extra_preferences"].get("office_time", "")
     if not office_time:
@@ -451,19 +630,22 @@ def finalize_plan(req: FinalizePlanRequest):
             },
         )
 
-    analysis = analyse_user_history(req.user_id)
-    fallback = fallback_suggestions(profile, prefs)
+    with track_agent_latency("agent2", "analysis"):
+        analysis = analyse_user_history(req.user_id)
+    with track_agent_latency("agent3", "fallback"):
+        fallback = fallback_suggestions(profile, prefs)
     correction_prompt = _build_correction_prompt(req.events, prefs.get("extra_preferences", {}), prefs["extra_preferences"].get("user_change_reason", ""))
 
     if correction_prompt:
-        plan_payload = generate_day_plan_with_gpt(
-            profile,
-            prefs,
-            analysis,
-            fallback,
-            correction_prompt=correction_prompt,
-            return_metadata=True,
-        )
+        with track_agent_latency("agent1", "generation"):
+            plan_payload = generate_day_plan_with_gpt(
+                profile,
+                prefs,
+                analysis,
+                fallback,
+                correction_prompt=correction_prompt,
+                return_metadata=True,
+            )
         final_events = plan_payload["events"]
         health_tip = plan_payload.get("health_tip", fallback.get("health_tip", ""))
         agent2_validation = {
@@ -482,6 +664,14 @@ def finalize_plan(req: FinalizePlanRequest):
             "message": "User manually edited the generated day plan.",
             "updated_by": "user",
         }
+
+    final_events, overlap_warnings = _skip_office_overlaps(
+        final_events,
+        office_time,
+        req.wake_time,
+        req.sleep_time,
+        prefs["extra_preferences"].get("workout_timing", ""),
+    )
 
     # Agent 3 validates final plan
     validation = validate_final_plan(
@@ -517,6 +707,7 @@ def finalize_plan(req: FinalizePlanRequest):
         "new_plan_id": new_plan_id,
         "user_id": req.user_id,
         "events": final_events,
+        "warnings": overlap_warnings,
         "validation": validation,
         "health_tip": health_tip,
     }

@@ -18,6 +18,9 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 COHERE_MODEL = os.getenv("COHERE_MODEL", "command-r-plus-08-2024")
+LLM_REQUEST_TIMEOUT_SECONDS = float(os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "12"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "0"))
+ENABLE_REMOTE_LLM = os.getenv("ENABLE_REMOTE_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",

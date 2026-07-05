@@ -11,7 +11,8 @@ FastAPI backend + Streamlit UI for a multi-agent day planner.
 - Disease-aware meal suggestions
 - Reading activity embedded in the plan table
 - Health tip returned after plan generation
-- Prometheus, Grafana, and Loki observability
+- Prometheus, Grafana, Loki, and DeepEval observability
+- Workout and yoga reference images/GIFs shown inside the generated plan section
 
 ## Environment
 Put API keys and database settings in `Capstone/.env`:
@@ -25,7 +26,21 @@ COHERE_API_KEY=...
 DATABASE_URL=postgresql://postgres:admin123@localhost:5432/ai_day_planner
 ```
 
-The current code uses SQLite for local persistence and creates the database file automatically at `data/day_planner.db`. The `DATABASE_URL` value is kept for compatibility with the older PostgreSQL path, but you do not need to set up Postgres for the current SQLite-backed build.
+The app now supports both PostgreSQL and SQLite:
+- If `DATABASE_URL` starts with `postgresql://` or `postgres://`, the backend uses PostgreSQL.
+- If PostgreSQL is unavailable, the app falls back to SQLite and creates `data/day_planner.db` automatically.
+
+For local PostgreSQL use:
+
+```env
+DATABASE_URL=postgresql://postgres:admin123@localhost:5432/ai_day_planner
+```
+
+Install the driver with:
+
+```powershell
+pip install psycopg2-binary
+```
 
 ## Run Backend
 
@@ -33,8 +48,13 @@ The current code uses SQLite for local persistence and creates the database file
 cd C:\Training\AI-ML-Training-Projects\Capstone
 venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn src.main:app --reload
+.\run_backend.ps1
 ```
+
+If you want to run Uvicorn manually, use:
+`uvicorn src.main:app --reload --reload-dir src --reload-dir ui --reload-exclude logs --reload-exclude data`
+
+That keeps the reloader away from `logs/capstone.jsonl` and `data/day_planner.db`, which are written by the app during normal use.
 
 Backend docs:
 - `http://127.0.0.1:8000/docs`
@@ -62,9 +82,14 @@ Then open:
 - Prometheus: `http://localhost:9090`
 - Grafana: `http://localhost:3000`
 - Loki: `http://localhost:3100`
+- DeepEval health: `http://127.0.0.1:8000/deepeval/health`
+
+For a short end-to-end guide, see [observability/README.md](C:/Training/Capstone/Capstone/observability/README.md).
 
 The backend exposes:
 - `/metrics` for Prometheus
+- `/deepeval/evaluate` for plan evaluation
+- `/deepeval/health` for a browser-safe status check
 - JSON-line logs in `logs/capstone.jsonl`
 
 ## Notes

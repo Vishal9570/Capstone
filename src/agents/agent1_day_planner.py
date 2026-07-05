@@ -7,13 +7,16 @@ except ImportError:  # pragma: no cover - optional dependency
     OpenAI = None
 
 from src.config import (
+    ENABLE_REMOTE_LLM,
     OPENAI_API_KEY,
     OPENAI_MODEL,
     GEMINI_API_KEY,
     GEMINI_MODEL,
+    LLM_MAX_RETRIES,
+    LLM_REQUEST_TIMEOUT_SECONDS,
 )
 from src.llm_utils import extract_json_payload, get_text_from_response
-from src.services.schedule_builder import build_fixed_schedule
+from src.services.schedule_builder import awake_window_bounds, build_fixed_schedule, parse_duration_minutes, to_minutes
 
 
 BOOK_LIBRARY = [
@@ -24,6 +27,48 @@ BOOK_LIBRARY = [
     "Why We Sleep by Matthew Walker",
     "Deep Work by Cal Newport",
 ]
+
+GENRE_BOOK_LIBRARY = {
+    "science fiction": [
+        "Dune by Frank Herbert",
+        "Ender's Game by Orson Scott Card",
+        "The Left Hand of Darkness by Ursula K. Le Guin",
+    ],
+    "fiction": [
+        "The Alchemist by Paulo Coelho",
+        "The Kite Runner by Khaled Hosseini",
+        "1984 by George Orwell",
+    ],
+    "horror": [
+        "Dracula by Bram Stoker",
+        "Frankenstein by Mary Shelley",
+        "The Haunting of Hill House by Shirley Jackson",
+    ],
+    "comedy": [
+        "Good Omens by Terry Pratchett and Neil Gaiman",
+        "Bossypants by Tina Fey",
+        "Yes Please by Amy Poehler",
+    ],
+    "romance": [
+        "Pride and Prejudice by Jane Austen",
+        "Me Before You by Jojo Moyes",
+        "The Notebook by Nicholas Sparks",
+    ],
+    "mystery": [
+        "Gone Girl by Gillian Flynn",
+        "The Girl with the Dragon Tattoo by Stieg Larsson",
+        "And Then There Were None by Agatha Christie",
+    ],
+}
+
+GENRE_KEYWORDS = {
+    "science fiction": ["science fiction", "sci-fi", "scifi", "sci fi"],
+    "horror": ["horror", "scary", "ghost", "ghost story", "thriller", "spooky", "haunted", "dark"],
+    "comedy": ["comedy", "funny", "humor", "humour", "comic", "laugh", "light-hearted", "satire"],
+    "romance": ["romance", "romantic", "love story", "love"],
+    "mystery": ["mystery", "mystery novel", "detective", "whodunit", "crime", "suspense"],
+    "fiction": ["fiction", "fictional", "novel", "fantasy", "adventure", "literary"],
+}
 
 SUGAR_BAN_LIST = [
     "sugary drinks",
@@ -37,6 +82,27 @@ SUGAR_BAN_LIST = [
     "deep fried",
 ]
 
+VEGAN_BAN_LIST = [
+    "chicken",
+    "egg",
+    "fish",
+    "mutton",
+    "meat",
+    "milk",
+    "curd",
+    "yogurt",
+    "paneer",
+    "ghee",
+    "butter",
+    "cheese",
+    "cream",
+    "buttermilk",
+    "whey",
+    "honey",
+    "omelette",
+    "omelet",
+]
+
 
 def _normalize_diseases(profile: dict[str, Any]):
     raw = profile.get("diseases") or []
@@ -47,9 +113,98 @@ def _normalize_diseases(profile: dict[str, Any]):
     return {item.lower() for item in items if item and item.lower() != "none"}
 
 
+def _parse_numeric(value: Any):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _parse_time_to_hours(value: str):
+    try:
+        hour, minute = str(value or "").split(":")
+        return int(hour) + int(minute) / 60.0
+    except Exception:
+        return None
+
+
+def _build_profile_health_tip(profile: dict[str, Any], prefs: dict[str, Any] | None = None):
+    prefs = prefs or {}
+    diseases = _normalize_diseases(profile)
+    tips = []
+
+    height = _parse_numeric(profile.get("height"))
+    weight = _parse_numeric(profile.get("weight"))
+    if height and weight:
+        height_m = height / 100.0 if height > 3 else height
+        if height_m > 0:
+            bmi = weight / (height_m * height_m)
+            if bmi >= 30:
+                tips.append("Your BMI looks high, so focus on lighter portions, more daily walking, and low-oil meals.")
+            elif bmi >= 25:
+                tips.append("Your BMI suggests you should keep portions moderate and stay consistent with exercise.")
+            elif bmi < 18.5:
+                tips.append("Your BMI looks low, so add protein-rich, nutrient-dense meals and avoid skipping food.")
+
+    age = _parse_numeric(profile.get("age"))
+    if age is not None:
+        if age >= 60:
+            tips.append("At your age, keep workouts gentle, hydrate well, and keep health checkups regular.")
+        elif age >= 40:
+            tips.append("With increasing age, consistency in sleep, activity, and routine health checks matters more.")
+
+    wake_hours = _parse_time_to_hours(prefs.get("wake_time"))
+    sleep_hours = _parse_time_to_hours(prefs.get("sleep_time"))
+    if wake_hours is not None and sleep_hours is not None:
+        sleep_duration = sleep_hours - wake_hours
+        if sleep_duration <= 0:
+            sleep_duration += 24
+        if sleep_duration < 7:
+            tips.append("Your sleep window is short, so try to sleep earlier and protect at least 7 hours when possible.")
+        elif sleep_duration > 8:
+            tips.append("Your sleep window is longer than average, so keep it consistent and make sure you still feel rested.")
+        else:
+            tips.append("Your wake and sleep timings are well balanced, and 7 to 8 hours of sleep is a healthy normal routine.")
+
+    if {"sugar", "diabetes"} & diseases:
+        tips.append("For sugar management, keep meals high in fiber, avoid sweet drinks, and stay consistent with sugar checks.")
+    elif {"bp", "blood pressure"} & diseases:
+        tips.append("For blood pressure, keep salt moderate, avoid packaged snacks, and take relaxed walks after meals.")
+    elif "heart" in diseases:
+        tips.append("For heart health, prefer light home-cooked meals, healthy fats in moderation, and steady daily activity.")
+
+    if not tips:
+        return ""
+
+    unique_tips = list(dict.fromkeys(tips))
+    return " ".join(unique_tips[:4]) if len(unique_tips) > 1 else unique_tips[0]
+
+
 def _contains_any(text: str, words: list[str]) -> bool:
     lowered = (text or "").lower()
     return any(word in lowered for word in words)
+
+
+def _sort_events_chronologically(events: list[dict[str, Any]], wake_time: str, sleep_time: str):
+    wake_minutes, sleep_minutes = awake_window_bounds(wake_time, sleep_time)
+    sleep_events = [event for event in events or [] if str(event.get("category", "")).lower() == "sleep"]
+    non_sleep_events = [event for event in events or [] if str(event.get("category", "")).lower() != "sleep"]
+
+    def sort_key(item_with_index):
+        index, event = item_with_index
+        try:
+            event_minutes = to_minutes(str(event.get("time", "00:00")))
+        except Exception:
+            event_minutes = wake_minutes
+        if sleep_minutes <= wake_minutes and event_minutes < wake_minutes:
+            event_minutes += 24 * 60
+        return event_minutes, index
+
+    ordered_events = [event for _, event in sorted(enumerate(non_sleep_events), key=sort_key)]
+    ordered_events.extend(sleep_events)
+    return ordered_events
 
 
 def _select_book(profile: dict[str, Any], analysis: dict[str, Any]):
@@ -57,6 +212,40 @@ def _select_book(profile: dict[str, Any], analysis: dict[str, Any]):
     disease_count = len(_normalize_diseases(profile))
     index = (history_count + disease_count + len(str(profile.get("name") or ""))) % len(BOOK_LIBRARY)
     return BOOK_LIBRARY[index]
+
+
+def _detect_reading_genre(text: str):
+    lowered = f" {text or ''} ".lower()
+    best_genre = ""
+    best_index = None
+    for genre, keywords in GENRE_KEYWORDS.items():
+        for keyword in keywords:
+            needle = f" {keyword.lower()} "
+            index = lowered.find(needle)
+            if index == -1:
+                continue
+            if best_index is None or index < best_index:
+                best_genre = genre
+                best_index = index
+    return best_genre
+
+
+def _select_book_for_preferences(profile: dict[str, Any], analysis: dict[str, Any], prefs: dict[str, Any], correction_prompt: str = ""):
+    extra_preferences = prefs.get("extra_preferences", {}) if isinstance(prefs, dict) else {}
+    reading_text = " ".join(
+        [
+            str(extra_preferences.get("reading_preference", "") or ""),
+            str(extra_preferences.get("notes", "") or ""),
+            str(extra_preferences.get("user_change_reason", "") or ""),
+            correction_prompt or "",
+        ]
+    )
+    genre = _detect_reading_genre(reading_text)
+    if genre and genre in GENRE_BOOK_LIBRARY:
+        books = GENRE_BOOK_LIBRARY[genre]
+        index = (int(analysis.get("history_count") or 0) + len(str(profile.get("name") or ""))) % len(books)
+        return books[index]
+    return _select_book(profile, analysis)
 
 
 def _history_based_health_tip(profile: dict[str, Any], analysis: dict[str, Any]):
@@ -97,8 +286,20 @@ def _history_based_health_tip(profile: dict[str, Any], analysis: dict[str, Any])
     return "A short evening walk after dinner can improve digestion and sleep quality."
 
 
-def _health_tip(profile: dict[str, Any], analysis: dict[str, Any], fallback: dict[str, Any]):
+def _health_tip(profile: dict[str, Any], analysis: dict[str, Any], fallback: dict[str, Any], prefs: dict[str, Any] | None = None):
+    profile_tip = _build_profile_health_tip(profile, prefs)
     history_tip = _history_based_health_tip(profile, analysis)
+    has_history_context = bool(
+        analysis.get("history_count")
+        or analysis.get("recommendations")
+        or analysis.get("meal_patterns")
+        or analysis.get("activity_patterns")
+        or analysis.get("recent_patterns")
+    )
+    if profile_tip and history_tip and has_history_context:
+        return f"{profile_tip} {history_tip}"
+    if profile_tip:
+        return profile_tip
     if history_tip:
         return history_tip
     if fallback.get("health_tip"):
@@ -152,6 +353,12 @@ def _meal_candidates(
                 "Vegetable oats upma with nuts",
                 "Besan chilla with paneer and salad",
             ]
+        if diet_type == "vegan":
+            return [
+                "Vegetable oats upma with peanuts and lemon",
+                "Poha with peanuts, curry leaves and lemon",
+                "Besan chilla with mint chutney and salad",
+            ]
         if diet_type == "veg":
             return [
                 "Oats porridge with nuts, curd and fruit",
@@ -170,6 +377,12 @@ def _meal_candidates(
                 "Dal, mixed vegetables, salad and millet roti",
                 "Rajma with brown rice and cucumber salad",
                 "Paneer sabzi with brown rice and salad",
+            ]
+        if diet_type == "vegan":
+            return [
+                "Dal, brown rice, sabzi and salad",
+                "Chole with roti and cucumber salad",
+                "Rajma with millet roti and vegetables",
             ]
         if diet_type == "veg":
             return [
@@ -190,6 +403,12 @@ def _meal_candidates(
                 "Coconut water with nuts",
                 "Sprouts chaat with lemon",
             ]
+        if diet_type == "vegan":
+            return [
+                "Coconut water with roasted chana",
+                "Fruit bowl with seeds and nuts",
+                "Sprouts chaat with lemon",
+            ]
         if diet_type == "veg":
             return [
                 "Buttermilk with roasted chana",
@@ -208,6 +427,12 @@ def _meal_candidates(
                 "Vegetable soup with tofu salad",
                 "Light moong dal khichdi with curd",
                 "Paneer and vegetable bowl with millet roti",
+            ]
+        if diet_type == "vegan":
+            return [
+                "Vegetable soup with tofu salad",
+                "Light moong dal khichdi with pickle",
+                "Tofu and vegetable bowl with millet roti",
             ]
         if diet_type == "veg":
             return [
@@ -236,7 +461,9 @@ def _sanitize_meal(text: str, profile: dict[str, Any], diet_type: str | None = N
     diseases = _normalize_diseases(profile)
     diet_type = (diet_type or profile.get("diet_type") or "Veg").strip().lower()
 
-    if diet_type == "veg" and _contains_any(text, ["chicken", "egg", "fish", "mutton", "meat"]):
+    if diet_type in {"veg", "vegan"} and _contains_any(text, ["chicken", "egg", "fish", "mutton", "meat"]):
+        return None
+    if diet_type == "vegan" and _contains_any(text, VEGAN_BAN_LIST):
         return None
 
     if {"sugar", "diabetes"} & diseases:
@@ -398,7 +625,11 @@ def _generate_with_openai(profile, prefs, schedule, analysis, fallback, correcti
     if OpenAI is None:
         raise RuntimeError("openai package is not installed")
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(
+        api_key=OPENAI_API_KEY,
+        timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+        max_retries=LLM_MAX_RETRIES,
+    )
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[
@@ -420,7 +651,8 @@ def _generate_with_gemini(profile, prefs, schedule, analysis, fallback, correcti
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(GEMINI_MODEL)
     response = model.generate_content(
-        _build_prompt(profile, prefs, schedule, analysis, fallback, correction_prompt)
+        _build_prompt(profile, prefs, schedule, analysis, fallback, correction_prompt),
+        request_options={"timeout": LLM_REQUEST_TIMEOUT_SECONDS},
     )
     text = getattr(response, "text", "") or get_text_from_response(response)
     return _parse_llm_meals(text, profile, prefs.get("diet_type"))
@@ -429,6 +661,8 @@ def _generate_with_gemini(profile, prefs, schedule, analysis, fallback, correcti
 def generate_meals_with_agent1(profile, prefs, schedule, analysis=None, fallback=None, correction_prompt=""):
     analysis = analysis or {}
     fallback = fallback or {}
+    if not ENABLE_REMOTE_LLM:
+        return _local_meals(profile, prefs, analysis, fallback)
     try:
         if OPENAI_API_KEY:
             return _generate_with_openai(profile, prefs, schedule, analysis, fallback, correction_prompt)
@@ -467,9 +701,13 @@ def generate_day_plan_with_gpt(
         sleep_time=sleep_time,
         fitness_type=fitness_type,
         workout_duration=workout_duration,
-    office_time=office_time,
+        office_time=office_time,
         workout_timing=prefs.get("extra_preferences", {}).get("workout_timing")
         or prefs.get("extra_preferences", {}).get("gym_preference", ""),
+        planning_notes=" ".join(
+            str(prefs.get("extra_preferences", {}).get(key, "") or "")
+            for key in ("notes", "user_change_reason", "reading_preference")
+        ),
     )
 
     meals = generate_meals_with_agent1(
@@ -481,16 +719,50 @@ def generate_day_plan_with_gpt(
         correction_prompt=correction_prompt,
     )
 
-    book_title = _select_book(profile, analysis)
-    health_tip = _health_tip(profile, analysis, fallback)
+    book_title = _select_book_for_preferences(profile, analysis, prefs, correction_prompt)
+    health_tip = _health_tip(profile, analysis, fallback, prefs)
 
     if not meals.get("reading_book"):
+        meals["reading_book"] = book_title
+    elif _detect_reading_genre(
+        " ".join(
+            [
+                str(prefs.get("extra_preferences", {}).get("reading_preference", "") or ""),
+                str(prefs.get("extra_preferences", {}).get("notes", "") or ""),
+                str(prefs.get("extra_preferences", {}).get("user_change_reason", "") or ""),
+                correction_prompt or "",
+            ]
+        )
+    ):
         meals["reading_book"] = book_title
     if not meals.get("health_tip"):
         meals["health_tip"] = health_tip
 
     diseases = _normalize_diseases(profile)
     tea_notes = "Sugar-safe afternoon snack." if {"sugar", "diabetes"} & diseases else "Light snack or hydration break."
+
+    workout_sessions = schedule.get("workout_sessions") or [
+        {
+            "time": schedule["workout"],
+            "duration_minutes": parse_duration_minutes(workout_duration, default=60),
+            "label": schedule["workout_label"],
+        }
+    ]
+    workout_events = []
+    for session in workout_sessions:
+        session_duration = int(session.get("duration_minutes") or parse_duration_minutes(workout_duration, default=60))
+        session_time = session.get("time") or schedule["workout"]
+        session_label = session.get("label") or schedule["workout_label"]
+        workout_events.append(
+            {
+                "time": session_time,
+                "activity": f"{session_label} for {workout_duration}",
+                "category": "workout",
+                "duration_minutes": session_duration,
+                "notes": f"Workout is planned according to the user's timing preference ({schedule['workout_timing']}).",
+                "remark": "",
+            }
+        )
 
     events = [
         {
@@ -525,14 +797,7 @@ def generate_day_plan_with_gpt(
             "notes": tea_notes,
             "remark": "",
         },
-        {
-            "time": schedule["workout"],
-            "activity": f"{schedule['workout_label']} for {workout_duration}",
-            "category": "workout",
-            "duration_minutes": 60,
-            "notes": "Workout is planned after tea break or after office if office time is provided.",
-            "remark": "",
-        },
+        *workout_events,
         {
             "time": schedule["dinner"],
             "activity": meals["dinner"],
@@ -566,6 +831,8 @@ def generate_day_plan_with_gpt(
             "remark": "",
         },
     ]
+
+    events = _sort_events_chronologically(events, schedule["wake"], schedule["sleep"])
 
     if return_metadata:
         return {

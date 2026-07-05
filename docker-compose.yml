@@ -1,31 +1,70 @@
+# version: '3'
+
+# services:
+
+#   backend:
+
+#     build:
+
+#       context: .
+
+#       dockerfile: Dockerfile.backend
+
+#     ports:
+
+#       - "8000:8000"
+
+#   frontend:
+
+#     build:
+
+#       context: .
+
+#       dockerfile: Dockerfile.frontend
+
+#     ports:
+
+#       - "8501:8501"
+
+#     depends_on:
+
+#       - backend
+
 version: '3'
 
 services:
 
   backend:
-
     build:
-
       context: .
-
       dockerfile: Dockerfile.backend
-
     ports:
-
       - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - capstone-net
 
   frontend:
-
     build:
-
       context: .
-
       dockerfile: Dockerfile.frontend
-
     ports:
-
       - "8501:8501"
-
+    environment:
+      - API_BASE=http://backend:8000
     depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - capstone-net
 
-      - backend
+networks:
+  capstone-net:
+    driver: bridge

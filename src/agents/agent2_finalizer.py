@@ -5,7 +5,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     Groq = None
 
-from src.config import GROQ_API_KEY, GROQ_MODEL
+from src.config import ENABLE_REMOTE_LLM, GROQ_API_KEY, GROQ_MODEL, LLM_MAX_RETRIES, LLM_REQUEST_TIMEOUT_SECONDS
 from src.llm_utils import extract_json_payload, get_text_from_response
 
 
@@ -19,11 +19,15 @@ def finalize_plan_with_agent2(profile, prefs, edited_events):
     It respects user edits and adjusts remaining schedule logically.
     """
 
-    if not GROQ_API_KEY or Groq is None:
+    if not ENABLE_REMOTE_LLM or not GROQ_API_KEY or Groq is None:
         return _local_finalize(edited_events)
 
     try:
-        client = Groq(api_key=GROQ_API_KEY)
+        client = Groq(
+            api_key=GROQ_API_KEY,
+            timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+            max_retries=LLM_MAX_RETRIES,
+        )
         prompt = f"""
 You are Agent 2 - Day Plan Finaliser.
 Return only valid JSON.

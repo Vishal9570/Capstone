@@ -10,7 +10,14 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     Client = None
 
-from src.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, COHERE_API_KEY, COHERE_MODEL
+from src.config import (
+    ENABLE_REMOTE_LLM,
+    ANTHROPIC_API_KEY,
+    ANTHROPIC_MODEL,
+    COHERE_API_KEY,
+    COHERE_MODEL,
+    LLM_REQUEST_TIMEOUT_SECONDS,
+)
 from src.llm_utils import extract_json_payload, get_text_from_response
 
 
@@ -64,9 +71,9 @@ def _local_feedback(user_profile: dict, preferences: dict):
 def fallback_suggestions(user_profile: dict, preferences: dict):
     local_result = _local_feedback(user_profile, preferences)
 
-    if ANTHROPIC_API_KEY and Anthropic is not None:
+    if ENABLE_REMOTE_LLM and ANTHROPIC_API_KEY and Anthropic is not None:
         try:
-            client = Anthropic(api_key=ANTHROPIC_API_KEY)
+            client = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=LLM_REQUEST_TIMEOUT_SECONDS)
             prompt = f"""
 You are Agent 3 - Safety and Feedback Specialist.
 Return only valid JSON.
@@ -100,9 +107,9 @@ Return a JSON object with:
         except Exception as exc:
             print("Agent 3 Anthropic fallback failed:", exc)
 
-    if COHERE_API_KEY and Client is not None:
+    if ENABLE_REMOTE_LLM and COHERE_API_KEY and Client is not None:
         try:
-            client = Client(api_key=COHERE_API_KEY)
+            client = Client(api_key=COHERE_API_KEY, timeout=LLM_REQUEST_TIMEOUT_SECONDS)
             prompt = f"""
 You are Agent 3 - Safety and Feedback Specialist.
 Return only valid JSON.

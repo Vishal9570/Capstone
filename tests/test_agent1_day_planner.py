@@ -64,6 +64,32 @@ def test_generate_day_plan_non_veg_includes_non_veg_options():
     assert any(word in meal_text for word in ["egg", "chicken"])
 
 
+def test_generate_day_plan_vegan_uses_vegan_meals():
+    planner.OPENAI_API_KEY = ""
+    planner.GEMINI_API_KEY = ""
+
+    profile = {
+        "name": "Test User",
+        "diseases": [],
+        "diet_type": "Vegan",
+    }
+    prefs = {
+        "wake_time": "07:00",
+        "sleep_time": "22:00",
+        "diet_type": "Vegan",
+        "fitness_type": "Yoga",
+        "workout_duration": "1 hr",
+        "extra_preferences": {},
+    }
+
+    result = planner.generate_day_plan_with_gpt(profile, prefs, {}, {}, return_metadata=True)
+    meal_text = " ".join(event["activity"].lower() for event in result["events"] if event["category"] == "meal")
+
+    assert not any(word in meal_text for word in ["egg", "chicken", "fish", "mutton", "meat"])
+    assert not any(word in meal_text for word in ["curd", "yogurt", "paneer", "milk", "butter", "ghee", "cheese", "buttermilk", "honey"])
+    assert any(word in meal_text for word in ["poha", "dal", "rajma", "chole", "tofu", "oats"])
+
+
 def test_generated_events_include_remark_column():
     planner.OPENAI_API_KEY = ""
     planner.GEMINI_API_KEY = ""
@@ -127,3 +153,92 @@ def test_health_tip_changes_with_history_context():
 
     assert result_a["health_tip"] != result_b["health_tip"]
     assert "sugar" in result_b["health_tip"].lower() or "rice" in result_b["health_tip"].lower()
+
+
+def test_health_tip_uses_profile_and_sleep_context():
+    planner.OPENAI_API_KEY = ""
+    planner.GEMINI_API_KEY = ""
+
+    profile = {
+        "name": "Test User",
+        "height": 170,
+        "weight": 90,
+        "age": 62,
+        "diseases": ["Sugar"],
+        "diet_type": "Veg",
+    }
+    prefs = {
+        "wake_time": "07:00",
+        "sleep_time": "12:30",
+        "diet_type": "Veg",
+        "fitness_type": "Yoga",
+        "workout_duration": "1 hr",
+        "extra_preferences": {},
+    }
+
+    result = planner.generate_day_plan_with_gpt(profile, prefs, {}, {}, return_metadata=True)
+    tip = result["health_tip"].lower()
+
+    assert "bmi" in tip or "weight" in tip or "portion" in tip
+    assert "sleep" in tip or "7 hours" in tip
+    assert "sugar" in tip
+
+
+def test_reading_remark_prefers_requested_genre():
+    planner.OPENAI_API_KEY = ""
+    planner.GEMINI_API_KEY = ""
+
+    profile = {
+        "name": "Test User",
+        "diseases": [],
+        "diet_type": "Veg",
+    }
+    prefs = {
+        "wake_time": "07:00",
+        "sleep_time": "22:00",
+        "diet_type": "Veg",
+        "fitness_type": "Yoga",
+        "workout_duration": "1 hr",
+        "extra_preferences": {
+            "notes": "Please suggest horror books for reading.",
+        },
+    }
+
+    result = planner.generate_day_plan_with_gpt(profile, prefs, {}, {}, return_metadata=True)
+    reading_activity = next(event["activity"] for event in result["events"] if event["category"] == "reading")
+
+    assert any(book in reading_activity for book in [
+        "Dracula by Bram Stoker",
+        "Frankenstein by Mary Shelley",
+        "The Haunting of Hill House by Shirley Jackson",
+    ])
+
+
+def test_reading_remark_prefers_comedy_genre():
+    planner.OPENAI_API_KEY = ""
+    planner.GEMINI_API_KEY = ""
+
+    profile = {
+        "name": "Test User",
+        "diseases": [],
+        "diet_type": "Veg",
+    }
+    prefs = {
+        "wake_time": "07:00",
+        "sleep_time": "22:00",
+        "diet_type": "Veg",
+        "fitness_type": "Yoga",
+        "workout_duration": "1 hr",
+        "extra_preferences": {
+            "notes": "Please suggest a comedy book for reading.",
+        },
+    }
+
+    result = planner.generate_day_plan_with_gpt(profile, prefs, {}, {}, return_metadata=True)
+    reading_activity = next(event["activity"] for event in result["events"] if event["category"] == "reading")
+
+    assert any(book in reading_activity for book in [
+        "Good Omens by Terry Pratchett and Neil Gaiman",
+        "Bossypants by Tina Fey",
+        "Yes Please by Amy Poehler",
+    ])

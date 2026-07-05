@@ -2,6 +2,7 @@ import json
 import logging
 import time
 import uuid
+from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -45,6 +46,12 @@ PLAN_ADHERENCE = Counter(
     "Signals that help compare how professions follow their plans",
     ["profession", "signal"],
 ) if Counter else None
+
+AGENT_LATENCY = Histogram(
+    "capstone_agent_duration_seconds",
+    "Execution time for each planner agent in seconds",
+    ["agent", "operation"],
+) if Histogram else None
 
 _LOGGER_NAME = "capstone"
 
@@ -161,3 +168,19 @@ def record_plan_event(profession: str | None, event_type: str, signal: str | Non
         PLAN_EVENTS.labels(profession=profession_label, event_type=event_label).inc()
     if signal and PLAN_ADHERENCE:
         PLAN_ADHERENCE.labels(profession=profession_label, signal=signal).inc()
+
+
+def observe_agent_latency(agent: str, operation: str, duration_seconds: float):
+    agent_label = (agent or "unknown_agent").strip() or "unknown_agent"
+    operation_label = (operation or "unknown_operation").strip() or "unknown_operation"
+    if AGENT_LATENCY:
+        AGENT_LATENCY.labels(agent=agent_label, operation=operation_label).observe(duration_seconds)
+
+
+@contextmanager
+def track_agent_latency(agent: str, operation: str):
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        observe_agent_latency(agent, operation, time.perf_counter() - start)

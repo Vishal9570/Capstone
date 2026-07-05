@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -20,53 +20,37 @@ def desktop_notification(title, message):
     notification.notify(
         title=title,
         message=message,
-        timeout=10
+        timeout=10,
     )
 
 
 def schedule_day_plan(events):
-
     """
-    events = [
-        {
-            "time":"07:30",
-            "activity":"Poha with curd",
-            "notes":"Healthy Indian breakfast",
-            "category":"meal"
-        }
-    ]
+    Schedule desktop notifications for upcoming plan items.
     """
-
     if scheduler is None:
         print("apscheduler is not installed; skipping scheduled desktop notifications.")
-        return
+        return {"enabled": False, "scheduled_count": 0, "message": "Scheduler unavailable."}
 
     if not scheduler.running:
         scheduler.start()
 
     if notification is None:
         print("plyer is not installed; skipping desktop notifications.")
-        return
+        return {"enabled": False, "scheduled_count": 0, "message": "Desktop notifications unavailable."}
 
-    for event in events:
-
+    scheduled_count = 0
+    for event in events or []:
         try:
-
-            event_time = datetime.strptime(
-                event["time"],
-                "%H:%M"
-            )
-
+            event_time = datetime.strptime(str(event.get("time", "")), "%H:%M")
             today = datetime.now()
-
             run_time = today.replace(
                 hour=event_time.hour,
                 minute=event_time.minute,
                 second=0,
-                microsecond=0
+                microsecond=0,
             )
 
-            # Skip past events
             if run_time < today:
                 continue
 
@@ -75,15 +59,19 @@ def schedule_day_plan(events):
                 trigger="date",
                 run_date=run_time,
                 args=[
-                    f"⏰ {event['activity']}",
-                    event["notes"]
+                    f"Notification: {event.get('activity', 'Day plan item')}",
+                    event.get("notes") or event.get("activity", ""),
                 ],
-                id=f"{event['time']}_{event['activity']}",
-                replace_existing=True
+                id=f"{event.get('time', 'unknown')}_{event.get('activity', 'item')}",
+                replace_existing=True,
             )
-
+            scheduled_count += 1
             print(f"Notification scheduled for {run_time}")
+        except Exception as exc:
+            print(exc)
 
-        except Exception as e:
-
-            print(e)
+    return {
+        "enabled": True,
+        "scheduled_count": scheduled_count,
+        "message": "Desktop notifications scheduled successfully." if scheduled_count else "No future notifications to schedule.",
+    }

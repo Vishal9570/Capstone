@@ -5,7 +5,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     Groq = None
 
-from src.config import GROQ_API_KEY, GROQ_MODEL
+from src.config import ENABLE_REMOTE_LLM, GROQ_API_KEY, GROQ_MODEL, LLM_MAX_RETRIES, LLM_REQUEST_TIMEOUT_SECONDS
 from src.llm_utils import extract_json_payload, get_text_from_response
 from src.services.history_service import get_history
 
@@ -69,11 +69,18 @@ def analyse_user_history(user_id: int):
 
     local_analysis = _build_local_analysis(history)
 
+    if not ENABLE_REMOTE_LLM:
+        return local_analysis
+
     if not GROQ_API_KEY or Groq is None:
         return local_analysis
 
     try:
-        client = Groq(api_key=GROQ_API_KEY)
+        client = Groq(
+            api_key=GROQ_API_KEY,
+            timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+            max_retries=LLM_MAX_RETRIES,
+        )
         prompt = f"""
 You are Agent 2 - History Analyser for a day planner.
 Return only valid JSON.

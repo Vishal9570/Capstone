@@ -19,6 +19,32 @@ def validate_final_plan(prefs, events):
 
     wake_mins = to_minutes(wake_time)
     sleep_mins = to_minutes(sleep_time)
+    diet_label = str(diet_type or "").strip().lower()
+    if diet_label == "vegan":
+        banned_words = [
+            "chicken",
+            "egg",
+            "fish",
+            "mutton",
+            "meat",
+            "milk",
+            "curd",
+            "yogurt",
+            "paneer",
+            "ghee",
+            "butter",
+            "cheese",
+            "cream",
+            "buttermilk",
+            "whey",
+            "honey",
+            "omelette",
+            "omelet",
+        ]
+    elif diet_label == "veg":
+        banned_words = ["chicken", "egg", "fish", "mutton", "meat"]
+    else:
+        banned_words = []
 
     if wake_mins is None:
         errors.append("Invalid wake-up time.")
@@ -39,13 +65,12 @@ def validate_final_plan(prefs, events):
                 f"{event.get('activity')} at {event_time} is before wake-up time {wake_time}"
             )
 
-        if diet_type == "Veg":
-            non_veg_words = ["chicken", "egg", "fish", "mutton", "meat"]
-            for word in non_veg_words:
-                if word in activity:
-                    errors.append(
-                        f"Non-veg item found in Veg plan: {event.get('activity')}"
-                    )
+        for word in banned_words:
+            if word in activity:
+                label = "Vegan" if diet_label == "vegan" else "Veg"
+                errors.append(
+                    f"{label} item found in {label} plan: {event.get('activity')}"
+                )
 
         # if "9" in office_time and "7" in office_time:
         #     if category == "workout" and 9 * 60 <= event_mins <= 19 * 60:

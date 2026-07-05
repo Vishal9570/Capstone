@@ -4,6 +4,7 @@ from src.db.database import create_tables
 from src.routes.auth import router as auth_router, profile_router
 from src.routes.analytics import router as analytics_router
 from src.routes.planner import router as planner_router
+from src.routes.evaluation import router as deepeval_router
 from src.observability import setup_observability
 
 create_tables()
@@ -14,6 +15,7 @@ app.include_router(auth_router)
 app.include_router(profile_router)
 app.include_router(analytics_router)
 app.include_router(planner_router)
+app.include_router(deepeval_router)
 
 
 @app.get("/")

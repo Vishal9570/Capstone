@@ -41,7 +41,7 @@ class FeedbackRequest(BaseModel):
 
 class UpdatePlanRequest(BaseModel):
     user_id: int
-    plan_id: int
+    plan_id: Optional[int] = None
     wake_time: str
     sleep_time: str
     diet_type: str
@@ -52,7 +52,7 @@ class UpdatePlanRequest(BaseModel):
 
 class FinalizePlanRequest(BaseModel):
     user_id: int
-    plan_id: int
+    plan_id: Optional[int] = None
     wake_time: str
     sleep_time: str
     diet_type: str

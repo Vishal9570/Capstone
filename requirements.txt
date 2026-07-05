@@ -11,5 +11,7 @@ anthropic
 cohere
 google-generativeai
 prometheus-client
+deepeval
 APScheduler
 pytest
+psycopg2-binary

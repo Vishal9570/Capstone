@@ -19,6 +19,22 @@ def minutes_to_time(minutes: int) -> str:
     return f"{h:02d}:{m:02d}"
 
 
+def parse_duration_minutes(duration_text: str, default: int = 60) -> int:
+    text = str(duration_text or "").strip().lower()
+    if not text:
+        return default
+
+    hour_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:hr|hrs|hour|hours|h)\b", text)
+    if hour_match:
+        return max(15, int(round(float(hour_match.group(1)) * 60)))
+
+    minute_match = re.search(r"(\d+)\s*(?:min|mins|minute|minutes|m)\b", text)
+    if minute_match:
+        return max(15, int(minute_match.group(1)))
+
+    return default
+
+
 def awake_window_bounds(wake_time: str, sleep_time: str):
     wake = to_minutes(wake_time)
     sleep = to_minutes(sleep_time)
@@ -74,6 +90,125 @@ def _compact_day_schedule(wake_minutes: int, sleep_minutes: int):
         compact_times[key] = current
 
     return compact_times
+
+
+def _normalize_workout_mode(workout_timing: str = "", planning_notes: str = "") -> str:
+    text = f"{workout_timing or ''} {planning_notes or ''}".lower()
+    if any(token in text for token in ["morning and evening", "morning & evening", "split", "two sessions", "2 sessions", "both morning and evening"]):
+        return "split"
+    if "after office" in text or "after-office" in text or "after_office" in text:
+        return "after office"
+    if "morning" in text:
+        return "morning"
+    if "evening" in text:
+        return "evening"
+    return "flexible"
+
+
+def _make_workout_session(time_minutes: int, duration_minutes: int, label: str):
+    return {
+        "time": minutes_to_time(time_minutes),
+        "duration_minutes": duration_minutes,
+        "label": label,
+    }
+
+
+def _allocate_split_sessions(
+    wake_minutes: int,
+    sleep_minutes: int,
+    office_start: int | None,
+    office_end: int | None,
+    workout_duration_minutes: int,
+    workout_label: str,
+    workout_mode: str,
+):
+    sessions = []
+    morning_window_end = office_start - 30 if office_start is not None else sleep_minutes - 180
+    morning_start = max(wake_minutes + 30, wake_minutes + 45)
+    morning_duration = workout_duration_minutes
+
+    if office_start is not None:
+        morning_start = min(morning_start, max(wake_minutes + 30, office_start - 150))
+        available = max(30, morning_window_end - morning_start)
+        morning_duration = min(workout_duration_minutes, available)
+
+    if workout_mode == "split" or workout_mode == "morning":
+        sessions.append(_make_workout_session(morning_start, morning_duration, f"{workout_label} - morning session"))
+
+    if workout_mode in {"split", "evening", "after office", "flexible"}:
+        if office_end is not None:
+            evening_start = max(office_end + 30, morning_start + morning_duration + 360)
+        else:
+            evening_start = max(morning_start + morning_duration + 360, wake_minutes + 11 * 60)
+
+        evening_start = min(evening_start, sleep_minutes - 150)
+        evening_duration = min(workout_duration_minutes, max(30, sleep_minutes - 120 - evening_start))
+        if workout_mode != "morning" and evening_duration > 0:
+            sessions.append(_make_workout_session(evening_start, evening_duration, f"{workout_label} - evening session"))
+
+    if not sessions:
+        start = max(wake_minutes + 45, wake_minutes + 30)
+        end_limit = sleep_minutes - 180
+        if office_start is not None:
+            end_limit = max(wake_minutes + 60, office_start - 45)
+        start = min(start, max(wake_minutes + 30, end_limit - workout_duration_minutes))
+        duration = min(workout_duration_minutes, max(30, end_limit - start))
+        sessions.append(_make_workout_session(start, duration, workout_label))
+
+    return sessions
+
+
+def _office_day_schedule(wake_minutes: int, sleep_minutes: int, office_start: int, office_end: int, workout_pref: str):
+    """
+    Build a compact office-friendly schedule that keeps meals and exercise
+    outside office hours while preserving a sensible daily order.
+    """
+    breakfast_minutes = clamp_minutes(
+        wake_minutes + 30,
+        wake_minutes + 30,
+        office_start - 30,
+    )
+
+    if breakfast_minutes >= office_start:
+        breakfast_minutes = clamp_minutes(
+            office_end + 30,
+            office_end + 15,
+            sleep_minutes - 330,
+        )
+
+    if workout_pref == "morning" and office_start - wake_minutes >= 180:
+        workout_minutes = clamp_minutes(
+            wake_minutes + 45,
+            wake_minutes + 30,
+            office_start - 120,
+        )
+        breakfast_minutes = clamp_minutes(
+            max(workout_minutes + 45, wake_minutes + 30),
+            workout_minutes + 30,
+            office_start - 30,
+        )
+    else:
+        workout_minutes = None
+
+    lunch_minutes = max(office_end + 30, breakfast_minutes + 120)
+    tea_minutes = lunch_minutes + 30
+
+    if workout_minutes is None:
+        workout_minutes = tea_minutes + 30
+
+    dinner_minutes = workout_minutes + 75
+    reading_minutes = dinner_minutes + 30
+    meditation_minutes = reading_minutes + 30
+
+    return {
+        "breakfast": breakfast_minutes,
+        "lunch": lunch_minutes,
+        "tea": tea_minutes,
+        "workout": workout_minutes,
+        "dinner": dinner_minutes,
+        "reading": reading_minutes,
+        "meditation": meditation_minutes,
+    }
 
 
 def parse_office_time(office_text: str):
@@ -165,16 +300,8 @@ def validate_awake_office_alignment(wake_time: str, sleep_time: str, office_time
     office_start = to_minutes(office["start"])
     office_end = to_minutes(office["end"])
 
-    if office_end <= office_start:
-        errors.append("Office end time must be after office start time.")
-
     if office_start < wake:
         errors.append("Office timing starts before the user wakes up.")
-
-    if sleep <= wake:
-        sleep = sleep + (24 * 60)
-    if office_end > sleep:
-        errors.append("Office timing continues after the user's sleep time.")
 
     return errors
 
@@ -186,191 +313,11 @@ def build_fixed_schedule(
     workout_duration: str,
     workout_timing: str = "",
     office_time: str = "",
+    planning_notes: str = "",
 ):
     wake_minutes, sleep_minutes = awake_window_bounds(wake_time, sleep_time)
-    workout_pref = (workout_timing or "").strip().lower()
-
-    if workout_pref == "morning":
-        workout_minutes = clamp_minutes(wake_minutes + 60, wake_minutes + 30, sleep_minutes - 360)
-        breakfast_minutes = clamp_minutes(workout_minutes + 60, workout_minutes + 30, sleep_minutes - 330)
-        lunch_minutes = clamp_minutes(breakfast_minutes + 210, breakfast_minutes + 120, sleep_minutes - 270)
-        tea_minutes = clamp_minutes(lunch_minutes + 210, lunch_minutes + 120, sleep_minutes - 210)
-        dinner_minutes = clamp_minutes(max(tea_minutes + 180, workout_minutes + 300), tea_minutes + 75, sleep_minutes - 120)
-    else:
-        breakfast_minutes = clamp_minutes(
-            wake_minutes + 90,
-            wake_minutes + 45,
-            sleep_minutes - 330,
-        )
-        lunch_minutes = clamp_minutes(
-            breakfast_minutes + 210,
-            breakfast_minutes + 120,
-            sleep_minutes - 270,
-        )
-        tea_minutes = clamp_minutes(
-            lunch_minutes + 210,
-            lunch_minutes + 120,
-            sleep_minutes - 210,
-        )
-        workout_minutes = clamp_minutes(
-            tea_minutes + 60,
-            tea_minutes + 30,
-            sleep_minutes - 180,
-        )
-        dinner_minutes = clamp_minutes(
-            max(tea_minutes + 180, workout_minutes + 90),
-            workout_minutes + 75,
-            sleep_minutes - 120,
-        )
-
-    office = parse_office_time(office_time)
-
-    if office:
-        office_start = to_minutes(office["start"])
-        office_end = to_minutes(office["end"])
-
-        if workout_pref in {"after office", "after-office", "after_office"}:
-            workout_minutes = office_end + 15
-            breakfast_minutes = clamp_minutes(breakfast_minutes, wake_minutes + 30, workout_minutes - 180)
-            lunch_minutes = clamp_minutes(max(lunch_minutes, breakfast_minutes + 120), breakfast_minutes + 120, workout_minutes - 120)
-            tea_minutes = clamp_minutes(max(tea_minutes, lunch_minutes + 120), lunch_minutes + 120, workout_minutes - 60)
-            dinner_minutes = clamp_minutes(max(dinner_minutes, workout_minutes + 75), workout_minutes + 75, sleep_minutes - 120)
-        elif workout_pref == "evening":
-            workout_minutes = clamp_minutes(max(tea_minutes + 90, office_end + 90), office_end + 60, sleep_minutes - 180)
-            dinner_minutes = clamp_minutes(max(dinner_minutes, workout_minutes + 75), workout_minutes + 75, sleep_minutes - 120)
-        elif workout_pref not in {"morning"} and office_start <= workout_minutes <= office_end:
-            # If workout falls inside office time, move it after office.
-            workout_minutes = office_end + 15
-
-        lunch_before_office = clamp_minutes(
-            office_start - 45,
-            breakfast_minutes + 120,
-            sleep_minutes - 270,
-        )
-        lunch_after_office = clamp_minutes(
-            office_end + 60,
-            breakfast_minutes + 120,
-            sleep_minutes - 270,
-        )
-
-        if office_start <= lunch_minutes <= office_end:
-            lunch_minutes = _outside_office_candidate(
-                lunch_before_office,
-                lunch_after_office,
-                office_start,
-                office_end,
-            )
-
-        if office_start <= lunch_minutes <= office_end:
-            lunch_minutes = office_end + 60
-
-        if lunch_minutes < breakfast_minutes + 120:
-            lunch_minutes = breakfast_minutes + 120
-
-        if lunch_minutes > sleep_minutes - 270:
-            lunch_minutes = sleep_minutes - 270
-
-        if lunch_minutes > office_start and lunch_minutes < office_end:
-            lunch_minutes = office_end + 60
-
-        tea_minutes = clamp_minutes(max(tea_minutes, lunch_minutes + 120), lunch_minutes + 120, sleep_minutes - 210)
-
-        # Dinner should not happen inside office time.
-        # Keep dinner after office, usually after workout.
-        if office_start <= dinner_minutes <= office_end:
-            dinner_minutes = office_end + 90
-
-        # If user wrote gym/workout after office, force workout after office.
-        office_text = office_time.lower()
-        if "gym after office" in office_text or "workout after office" in office_text:
-            workout_minutes = office_end + 15
-            dinner_minutes = office_end + 105
-
-    reading_minutes = clamp_minutes(dinner_minutes + 60, dinner_minutes + 30, sleep_minutes - 45)
-    meditation_minutes = clamp_minutes(reading_minutes + 30, reading_minutes + 15, sleep_minutes - 15)
-
-    if workout_pref == "morning":
-        ordered_keys = ["workout", "breakfast", "lunch", "tea", "dinner", "reading", "meditation"]
-    else:
-        ordered_keys = ["breakfast", "lunch", "tea", "workout", "dinner", "reading", "meditation"]
-    candidate_times = {
-        "breakfast": breakfast_minutes,
-        "lunch": lunch_minutes,
-        "tea": tea_minutes,
-        "workout": workout_minutes,
-        "dinner": dinner_minutes,
-        "reading": reading_minutes,
-        "meditation": meditation_minutes,
-    }
-    needs_compact = False
-    last_time = wake_minutes
-    for key in ordered_keys:
-        value = candidate_times[key]
-        if value < wake_minutes or value > sleep_minutes or value < last_time:
-            needs_compact = True
-            break
-        last_time = value
-
-    if needs_compact:
-        compact_times = _compact_day_schedule(wake_minutes, sleep_minutes)
-        breakfast_minutes = compact_times["breakfast"]
-        lunch_minutes = compact_times["lunch"]
-        tea_minutes = compact_times["tea"]
-        workout_minutes = compact_times["workout"]
-        dinner_minutes = compact_times["dinner"]
-        reading_minutes = compact_times["reading"]
-        meditation_minutes = compact_times["meditation"]
-
-    if office is None:
-        if workout_pref != "morning":
-            breakfast_minutes = clamp_minutes(breakfast_minutes, wake_minutes + 30, sleep_minutes - 330)
-            lunch_minutes = clamp_minutes(max(lunch_minutes, breakfast_minutes + 120), breakfast_minutes + 120, sleep_minutes - 270)
-            tea_minutes = clamp_minutes(max(tea_minutes, lunch_minutes + 120), lunch_minutes + 120, sleep_minutes - 210)
-            workout_minutes = clamp_minutes(max(workout_minutes, tea_minutes + 30), tea_minutes + 30, sleep_minutes - 180)
-            dinner_minutes = clamp_minutes(max(dinner_minutes, workout_minutes + 75), workout_minutes + 75, sleep_minutes - 120)
-        else:
-            breakfast_minutes = clamp_minutes(breakfast_minutes, wake_minutes + 30, sleep_minutes - 330)
-            lunch_minutes = clamp_minutes(max(lunch_minutes, breakfast_minutes + 120), breakfast_minutes + 120, sleep_minutes - 270)
-            tea_minutes = clamp_minutes(max(tea_minutes, lunch_minutes + 120), lunch_minutes + 120, sleep_minutes - 210)
-            dinner_minutes = clamp_minutes(max(dinner_minutes, tea_minutes + 60), tea_minutes + 75, sleep_minutes - 120)
-
-    if needs_compact:
-        compact_times = _compact_day_schedule(wake_minutes, sleep_minutes)
-        breakfast_minutes = compact_times["breakfast"]
-        lunch_minutes = compact_times["lunch"]
-        tea_minutes = compact_times["tea"]
-        workout_minutes = compact_times["workout"]
-        dinner_minutes = compact_times["dinner"]
-        reading_minutes = compact_times["reading"]
-        meditation_minutes = compact_times["meditation"]
-    else:
-        reading_minutes = clamp_minutes(dinner_minutes + 60, dinner_minutes + 30, sleep_minutes - 45)
-        meditation_minutes = clamp_minutes(reading_minutes + 30, reading_minutes + 15, sleep_minutes - 15)
-
-    if office:
-        if office_start <= lunch_minutes <= office_end:
-            lunch_candidate_after = office_end + 60
-            lunch_candidate_before = max(wake_minutes + 120, office_start - 45)
-            if lunch_candidate_after <= sleep_minutes - 270:
-                lunch_minutes = lunch_candidate_after
-            else:
-                lunch_minutes = min(lunch_candidate_before, sleep_minutes - 270)
-
-        tea_minutes = max(tea_minutes, lunch_minutes + 120)
-        if office_start <= tea_minutes <= office_end:
-            tea_minutes = office_end + 120
-
-        if office_start <= workout_minutes <= office_end and workout_pref not in {"morning"}:
-            workout_minutes = office_end + 15
-
-        dinner_minutes = max(dinner_minutes, tea_minutes + 60)
-        if office_start <= dinner_minutes <= office_end:
-            dinner_minutes = office_end + 90
-
-        reading_minutes = max(reading_minutes, dinner_minutes + 30)
-        meditation_minutes = max(meditation_minutes, reading_minutes + 15)
-        meditation_minutes = min(meditation_minutes, sleep_minutes - 15)
-
+    workout_pref = _normalize_workout_mode(workout_timing, planning_notes)
+    workout_duration_minutes = parse_duration_minutes(workout_duration, default=60)
     workout_label = (
         "Gym workout"
         if fitness_type == "Gym"
@@ -378,6 +325,193 @@ def build_fixed_schedule(
         if fitness_type == "Yoga"
         else "Gym + yoga"
     )
+
+    awake_span = sleep_minutes - wake_minutes
+    if awake_span <= 240:
+        compact_times = _compact_day_schedule(wake_minutes, sleep_minutes)
+        compact_sessions = [
+            _make_workout_session(
+                compact_times["workout"],
+                min(workout_duration_minutes, max(30, sleep_minutes - compact_times["workout"] - 120)),
+                workout_label,
+            )
+        ]
+        return {
+            "wake": wake_time,
+            "breakfast": minutes_to_time(compact_times["breakfast"]),
+            "lunch": minutes_to_time(compact_times["lunch"]),
+            "tea": minutes_to_time(compact_times["tea"]),
+            "workout": minutes_to_time(compact_times["workout"]),
+            "dinner": minutes_to_time(compact_times["dinner"]),
+            "reading": minutes_to_time(compact_times["reading"]),
+            "meditation": minutes_to_time(compact_times["meditation"]),
+            "sleep": minutes_to_time(sleep_minutes),
+            "workout_label": workout_label,
+            "workout_duration": workout_duration,
+            "workout_timing": workout_pref or "flexible",
+            "office": parse_office_time(office_time),
+            "workout_sessions": compact_sessions,
+        }
+
+    breakfast_minutes = clamp_minutes(
+        wake_minutes + 90 if workout_pref != "morning" else wake_minutes + 150,
+        wake_minutes + 30,
+        sleep_minutes - 330,
+    )
+    lunch_minutes = clamp_minutes(
+        breakfast_minutes + 210,
+        breakfast_minutes + 90,
+        sleep_minutes - 270,
+    )
+    tea_minutes = clamp_minutes(
+        lunch_minutes + 180,
+        lunch_minutes + 90,
+        sleep_minutes - 210,
+    )
+    workout_minutes = clamp_minutes(
+        tea_minutes + 60 if workout_pref not in {"morning", "split"} else wake_minutes + 45,
+        wake_minutes + 30,
+        sleep_minutes - workout_duration_minutes - 30,
+    )
+    dinner_minutes = clamp_minutes(
+        max(tea_minutes + 120, workout_minutes + workout_duration_minutes + 75),
+        workout_minutes + workout_duration_minutes + 60,
+        sleep_minutes - 120,
+    )
+
+    office = parse_office_time(office_time)
+    workout_sessions = []
+
+    if office:
+        office_start = to_minutes(office["start"])
+        office_end = to_minutes(office["end"])
+        if workout_pref == "split":
+            workout_sessions = _allocate_split_sessions(
+                wake_minutes,
+                sleep_minutes,
+                office_start,
+                office_end,
+                workout_duration_minutes,
+                workout_label,
+                workout_pref,
+            )
+        elif workout_pref in {"morning", "evening", "flexible"}:
+            workout_sessions = _allocate_split_sessions(
+                wake_minutes,
+                sleep_minutes,
+                office_start,
+                office_end,
+                workout_duration_minutes,
+                workout_label,
+                workout_pref,
+            )
+        elif workout_pref == "after office":
+            workout_sessions = []
+        if workout_sessions:
+            workout_minutes = to_minutes(workout_sessions[0]["time"])
+            workout_duration_minutes = workout_sessions[0]["duration_minutes"]
+            last_workout = workout_sessions[-1]
+            last_workout_end = to_minutes(last_workout["time"]) + last_workout["duration_minutes"]
+        else:
+            last_workout_end = workout_minutes + workout_duration_minutes
+        if workout_pref == "after office":
+            workout_start = max(office_end + 30, tea_minutes + 30)
+            workout_start = min(workout_start, sleep_minutes - workout_duration_minutes - 15)
+            workout_sessions = [
+                _make_workout_session(workout_start, workout_duration_minutes, workout_label),
+            ]
+            workout_minutes = to_minutes(workout_sessions[0]["time"])
+            workout_duration_minutes = workout_sessions[0]["duration_minutes"]
+            last_workout_end = workout_minutes + workout_duration_minutes
+            dinner_minutes = max(last_workout_end + 75, tea_minutes + 60)
+            if dinner_minutes > sleep_minutes - 120:
+                dinner_minutes = sleep_minutes - 120
+            reading_minutes = clamp_minutes(dinner_minutes + 60, dinner_minutes + 30, sleep_minutes - 45)
+            meditation_minutes = clamp_minutes(reading_minutes + 30, reading_minutes + 15, sleep_minutes - 15)
+        elif workout_sessions:
+            adjusted_sessions = []
+            for index, session in enumerate(workout_sessions):
+                session_time = to_minutes(session["time"])
+                session_duration = int(session.get("duration_minutes") or workout_duration_minutes)
+                if index == 0 and workout_pref in {"morning", "split"}:
+                    session_time = min(session_time, max(wake_minutes + 30, office_start - session_duration - 30))
+                elif index == 0:
+                    session_time = max(session_time, tea_minutes + 30, office_end + 90)
+                else:
+                    session_time = max(session_time, tea_minutes + 60, office_end + 120)
+                session_time = min(session_time, sleep_minutes - session_duration - 15)
+                adjusted_sessions.append(
+                    _make_workout_session(session_time, session_duration, session.get("label") or workout_label)
+                )
+            workout_sessions = adjusted_sessions
+            workout_minutes = to_minutes(workout_sessions[0]["time"])
+            workout_duration_minutes = workout_sessions[0]["duration_minutes"]
+            last_workout = workout_sessions[-1]
+            last_workout_end = to_minutes(last_workout["time"]) + last_workout["duration_minutes"]
+        else:
+            last_workout_end = workout_minutes + workout_duration_minutes
+    else:
+        if workout_pref == "split":
+            workout_sessions = _allocate_split_sessions(
+                wake_minutes,
+                sleep_minutes,
+                None,
+                None,
+                workout_duration_minutes,
+                workout_label,
+                workout_pref,
+            )
+        elif workout_pref == "morning":
+            workout_sessions = [_make_workout_session(workout_minutes, workout_duration_minutes, workout_label)]
+        elif workout_pref in {"evening", "after office"}:
+            workout_sessions = [_make_workout_session(workout_minutes, workout_duration_minutes, workout_label)]
+        else:
+            workout_sessions = [_make_workout_session(workout_minutes, workout_duration_minutes, workout_label)]
+        workout_minutes = to_minutes(workout_sessions[0]["time"])
+        workout_duration_minutes = workout_sessions[0]["duration_minutes"]
+        last_workout_end = to_minutes(workout_sessions[-1]["time"]) + workout_sessions[-1]["duration_minutes"]
+
+    if workout_pref == "split" and workout_sessions:
+        morning_session = workout_sessions[0]
+        morning_start = to_minutes(morning_session["time"])
+        morning_end = morning_start + int(morning_session.get("duration_minutes") or workout_duration_minutes)
+        breakfast_minutes = clamp_minutes(
+            max(wake_minutes + 30, morning_end + 30),
+            wake_minutes + 30,
+            sleep_minutes - 420,
+        )
+        lunch_minutes = clamp_minutes(
+            max(breakfast_minutes + 180, morning_end + 180),
+            breakfast_minutes + 90,
+            sleep_minutes - 270,
+        )
+        if len(workout_sessions) >= 2:
+            evening_start = to_minutes(workout_sessions[-1]["time"])
+            tea_upper = max(lunch_minutes + 180, evening_start - 60)
+        else:
+            tea_upper = sleep_minutes - 210
+        tea_minutes = clamp_minutes(
+            max(lunch_minutes + 150, lunch_minutes + 120),
+            lunch_minutes + 90,
+            tea_upper,
+        )
+        dinner_minutes = clamp_minutes(
+            max(last_workout_end + 75, tea_minutes + 60),
+            last_workout_end + 60,
+            sleep_minutes - 120,
+        )
+        reading_minutes = clamp_minutes(dinner_minutes + 60, dinner_minutes + 30, sleep_minutes - 45)
+        meditation_minutes = clamp_minutes(reading_minutes + 30, reading_minutes + 15, sleep_minutes - 15)
+    else:
+        dinner_minutes = clamp_minutes(
+            max(tea_minutes + 60, last_workout_end + 75),
+            last_workout_end + 60,
+            sleep_minutes - 120,
+        )
+        reading_minutes = clamp_minutes(dinner_minutes + 60, dinner_minutes + 30, sleep_minutes - 45)
+        meditation_minutes = clamp_minutes(reading_minutes + 30, reading_minutes + 15, sleep_minutes - 15)
+    if not workout_sessions:
+        workout_sessions = [_make_workout_session(workout_minutes, workout_duration_minutes, workout_label)]
 
     return {
         "wake": wake_time,
@@ -393,4 +527,5 @@ def build_fixed_schedule(
         "workout_duration": workout_duration,
         "workout_timing": workout_pref or "flexible",
         "office": office,
+        "workout_sessions": workout_sessions,
     }

@@ -1,7 +1,9 @@
+import sqlite3
+
 from fastapi import APIRouter, HTTPException
 from src.models import SignupRequest, LoginRequest, UpdateProfileRequest
 from src.services.auth_service import create_user, verify_login, get_user_by_email, get_user_by_id
-from src.db.database import get_connection
+from src.db.database import get_connection, DB_INTEGRITY_ERRORS
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 profile_router = APIRouter(tags=["Profile"])
@@ -9,11 +11,27 @@ profile_router = APIRouter(tags=["Profile"])
 
 @router.post("/signup")
 def signup(req: SignupRequest):
-    if get_user_by_email(req.email):
+    email = (req.email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+
+    try:
+        if get_user_by_email(email):
+            raise HTTPException(status_code=400, detail="Email already exists.")
+
+        req.email = email
+        user = create_user(req)
+        if not user:
+            raise HTTPException(status_code=500, detail="Signup failed while creating the user.")
+
+        user.pop("password_hash", None)
+        return {"message": "Signup successful", "user": user}
+    except HTTPException:
+        raise
+    except DB_INTEGRITY_ERRORS:
         raise HTTPException(status_code=400, detail="Email already exists.")
-    user = create_user(req)
-    user.pop("password_hash", None)
-    return {"message": "Signup successful", "user": user}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Signup failed: {exc}")
 
 
 @router.post("/login")
