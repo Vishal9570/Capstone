@@ -4,7 +4,8 @@ import httpx
 import pandas as pd
 from datetime import time
 
-API_BASE = "http://127.0.0.1:8000"
+import os
+API_BASE = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 st.set_page_config(page_title="AI Day Planner", page_icon="DP", layout="wide")
 st.markdown("""
 <style>
@@ -755,7 +756,11 @@ elif page == "Profile":
             st.session_state.user = result["user"]
             st.success("Profile updated successfully.")
             st.rerun()
+<<<<<<< Updated upstream
             
+=======
+
+>>>>>>> Stashed changes
 elif page == "History":
     st.title("History")
     st.caption("Review your previous day plans and saved context.")
