@@ -1,9 +1,7 @@
-﻿"""Streamlit UI for the Multi-Agent Day Planner. Run: streamlit run ui/app.py"""
+"""Streamlit UI for the Multi-Agent Day Planner. Run: streamlit run ui/app.py"""
 import streamlit as st
 import httpx
 import pandas as pd
-from datetime import time
-
 import os
 API_BASE = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 st.set_page_config(page_title="AI Day Planner", page_icon="DP", layout="wide")
@@ -235,12 +233,6 @@ def api_get(path, params=None):
 def _time_to_minutes(value):
     if value is None:
         return None
-    if isinstance(value, str):
-        try:
-            hours, minutes = value.split(":")
-            return int(hours) * 60 + int(minutes)
-        except Exception:
-            return None
     return value.hour * 60 + value.minute
 
 
@@ -254,15 +246,12 @@ def _office_alignment_errors(wake_time, sleep_time, office_start, office_end):
     office_start_mins = _time_to_minutes(office_start)
     office_end_mins = _time_to_minutes(office_end)
 
-    if sleep_mins <= wake_mins:
-        sleep_mins += 24 * 60
-        if office_start_mins < wake_mins:
-            office_start_mins += 24 * 60
-        if office_end_mins < office_start_mins:
-            office_end_mins += 24 * 60
-
+    if office_end_mins <= office_start_mins:
+        errors.append("Office end time must be after office start time.")
     if office_start_mins < wake_mins:
         errors.append("Office time starts before the user wakes up.")
+    if office_end_mins > sleep_mins:
+        errors.append("Office time continues after the user's sleep time.")
     return errors
 
 
@@ -414,12 +403,12 @@ with st.sidebar:
     st.caption(user["email"])
     page = st.radio(
         "Navigate",
-        ["Profile", "Dashboard", "History", "Feedback", "Analytics", "Observability"],
+        ["Profile", "Dashboard", "History", "Feedback", "Analytics"],
         index=1,
         label_visibility="collapsed",
     )
     st.divider()
-    # phone = st.text_input("Phone", value=user.get("phone") or "")
+    phone = st.text_input("Phone", value=user.get("phone") or "")
     if st.button("Logout"):
         st.session_state.logged_in = False
         st.session_state.user = None
@@ -451,8 +440,8 @@ if page in ("Dashboard", "Day Planner"):
     st.caption("Agent 1 creates, Agent 2 finalises, Agent 3 validates.")
 
     c1, c2 = st.columns(2)
-    wake_time = c1.time_input("Wake-up time", value=time(7, 0))
-    sleep_time = c2.time_input("Sleep time", value=time(0, 0))
+    wake_time = c1.time_input("Wake-up time")
+    sleep_time = c2.time_input("Sleep time")
     st.session_state.wake_time_value = wake_time
     st.session_state.sleep_time_value = sleep_time
 
@@ -487,7 +476,6 @@ if page in ("Dashboard", "Day Planner"):
             "Work From Home",
             "Hybrid",
             "Student",
-            "Flexible",
             "Not Working"
         ]
     )
@@ -498,12 +486,11 @@ if page in ("Dashboard", "Day Planner"):
             "Morning",
             "After Office",
             "Evening",
-            "Both Morning and Evening",
             "Flexible"
         ]
     )
 
-    diet_type = st.selectbox("Diet Preference", ["Veg", "Vegan", "Non-Veg"])
+    diet_type = st.selectbox("Diet Preference", ["Veg", "Non-Veg"])
     fitness_type = st.selectbox("Fitness Preference", ["Gym", "Yoga", "Both"])
     workout_duration = st.selectbox("Workout Duration", ["1 hr", "1.5 hr", "2 hr"])
 
@@ -514,28 +501,12 @@ if page in ("Dashboard", "Day Planner"):
 
     wake_str = wake_time.strftime("%H:%M")
     sleep_str = sleep_time.strftime("%H:%M")
-    st.session_state.last_plan_preferences = {
-        "wake_time": wake_str,
-        "sleep_time": sleep_str,
-        "diet_type": diet_type,
-        "fitness_type": fitness_type,
-        "workout_duration": workout_duration,
-        "extra_preferences": {
-            "work_mode": work_mode,
-            "office_time": office_time,
-            "workout_timing": gym_preference,
-            "gym_preference": gym_preference,
-            "notes": preferences_text,
-        },
-    }
 
     if "current_events" not in st.session_state:
         st.session_state.current_events = []
 
     if "edit_mode" not in st.session_state:
         st.session_state.edit_mode = False
-
-    has_plan_id = st.session_state.get("latest_plan_id") is not None
 
     if st.button("Generate My Day Plan", type="primary", use_container_width=True):
         office_errors = _office_alignment_errors(wake_time, sleep_time, office_start, office_end)
@@ -556,7 +527,7 @@ if page in ("Dashboard", "Day Planner"):
                 "diet_type": diet_type,
                 "fitness_type": fitness_type,
                 "workout_duration": workout_duration,
-                # "phone": phone or None,
+                "phone": phone or None,
                 "preferences": {
                     "notes": preferences_text,
                     "work_mode": work_mode,
@@ -573,17 +544,10 @@ if page in ("Dashboard", "Day Planner"):
             st.session_state.edit_mode = False
             # st.success("Day plan generated successfully.")
 
-            if result.get("message"):
-                st.warning(result["message"])
-            warnings = [warning for warning in result.get("warnings", []) if warning and warning != result.get("message")]
-            if warnings:
-                st.info(warnings[0])
-
             if result.get("validation"):
                 st.json(result["validation"])
             
             if result.get("health_tip"):
-                st.session_state.health_tip = result["health_tip"]
                 st.success(f"Healthy tip: {result['health_tip']}")
 
     if st.session_state.current_events:
@@ -612,14 +576,12 @@ if page in ("Dashboard", "Day Planner"):
             placeholder="Example: I did not have grilled chicken. I had rice and dal. Also lunch happened at 2 PM because of office work."
         )
         c1, c2 = st.columns(2)
-        if not has_plan_id:
-            st.info("Generate a plan first so the app has a plan id to update or finalise.")
-        if c1.button("Regenerate Plan", use_container_width=True, disabled=not has_plan_id):
+        if c1.button("Regenerate Plan", use_container_width=True):
             result = api_post(
                 "/planner/finalize",
                 {
                     "user_id": user["id"],
-                    "plan_id": st.session_state.get("latest_plan_id"),
+                    "plan_id": st.session_state.latest_plan_id,
                     "wake_time": wake_str,
                     "sleep_time": sleep_str,
                     "diet_type": diet_type,
@@ -637,22 +599,15 @@ if page in ("Dashboard", "Day Planner"):
                 st.session_state.current_events = _ensure_remark_column(result["events"])
                 st.session_state.latest_plan_id = result.get("new_plan_id")
                 st.success("Updated day plan regenerated successfully.")
-                if result.get("message"):
-                    st.warning(result["message"])
-                warnings = [warning for warning in result.get("warnings", []) if warning and warning != result.get("message")]
-                if warnings:
-                    st.info(warnings[0])
-                if result.get("health_tip"):
-                    st.session_state.health_tip = result["health_tip"]
                 if result.get("validation"):
                     st.json(result["validation"])
                 st.rerun()
-        if c1.button("Finalise Updated Plan", use_container_width=True, disabled=not has_plan_id):
+        if c1.button("Finalise Updated Plan", use_container_width=True):
             result = api_post(
                 "/planner/finalize",
                 {
                     "user_id": user["id"],
-                    "plan_id": st.session_state.get("latest_plan_id"),
+                    "plan_id": st.session_state.latest_plan_id,
                     "wake_time": wake_str,
                     "sleep_time": sleep_str,
                     "diet_type": diet_type,
@@ -670,13 +625,6 @@ if page in ("Dashboard", "Day Planner"):
                 st.session_state.current_events = _ensure_remark_column(result["events"])
                 st.session_state.latest_plan_id = result.get("new_plan_id")
                 st.success("Updated day plan finalised successfully.")
-                if result.get("message"):
-                    st.warning(result["message"])
-                warnings = [warning for warning in result.get("warnings", []) if warning and warning != result.get("message")]
-                if warnings:
-                    st.info(warnings[0])
-                if result.get("health_tip"):
-                    st.session_state.health_tip = result["health_tip"]
                 if result.get("validation"):
                     st.json(result["validation"])
                 st.rerun()
@@ -756,11 +704,7 @@ elif page == "Profile":
             st.session_state.user = result["user"]
             st.success("Profile updated successfully.")
             st.rerun()
-<<<<<<< Updated upstream
-            
-=======
 
->>>>>>> Stashed changes
 elif page == "History":
     st.title("History")
     st.caption("Review your previous day plans and saved context.")
@@ -854,62 +798,4 @@ elif page == "Analytics":
 | Profession Analytics | [http://127.0.0.1:8000/analytics/professions](http://127.0.0.1:8000/analytics/professions) |
 """)
 
-elif page == "Observability":
-    st.title("Observability")
-    st.caption("Watch the platform metrics and evaluate the latest plan with DeepEval.")
-
-    left, middle, right = st.columns(3)
-    with left:
-        metric_card("Prometheus", "9090", "Metrics endpoint and time-series UI", accent="Pr")
-        st.markdown("[Open Prometheus](http://localhost:9090)")
-    with middle:
-        metric_card("Grafana", "3000", "Dashboards and logs", accent="Gf")
-        st.markdown("[Open Grafana](http://localhost:3000)")
-    with right:
-        metric_card("DeepEval", "Evaluate", "Plan quality and alignment", accent="De")
-        st.markdown("[DeepEval health](http://127.0.0.1:8000/deepeval/health)")
-
-    st.markdown(
-        """
-| Tool | URL |
-|---|---|
-| Prometheus | [http://localhost:9090](http://localhost:9090) |
-| Grafana | [http://localhost:3000](http://localhost:3000) |
-| DeepEval health | [http://127.0.0.1:8000/deepeval/health](http://127.0.0.1:8000/deepeval/health) |
-| FastAPI Metrics | [http://127.0.0.1:8000/metrics](http://127.0.0.1:8000/metrics) |
-"""
-    )
-
-    if st.session_state.current_events:
-        st.subheader("DeepEval Report")
-        eval_payload = {
-            "profile": st.session_state.get("user", {}),
-            "preferences": st.session_state.get("last_plan_preferences", {}),
-            "events": st.session_state.current_events,
-            "health_tip": st.session_state.get("health_tip", ""),
-        }
-        if st.button("Run DeepEval on Latest Plan", use_container_width=True):
-            result = api_post("/deepeval/evaluate", eval_payload)
-            if result:
-                score = result.get("overall_score", 0)
-                c1, c2, c3, c4, c5 = st.columns(5)
-                with c1:
-                    metric_card("Overall", f"{score:.2f}", "DeepEval score", accent="O")
-                with c2:
-                    metric_card("Office", f"{result.get('metrics', {}).get('office_alignment', 0):.2f}", "Office overlap", accent="W")
-                with c3:
-                    metric_card("Diet", f"{result.get('metrics', {}).get('diet_alignment', 0):.2f}", "Diet fit", accent="D")
-                with c4:
-                    metric_card("Workout", f"{result.get('metrics', {}).get('workout_fit', 0):.2f}", "Workout fit", accent="Y")
-                with c5:
-                    metric_card("Sleep", f"{result.get('metrics', {}).get('sleep_fit', 0):.2f}", "Sleep schedule", accent="Z")
-
-                st.success(result.get("summary", "DeepEval completed."))
-                if result.get("warnings"):
-                    st.warning("DeepEval found alignment issues.")
-                    for item in result["warnings"]:
-                        st.write(f"- {item}")
-                st.json(result)
-    else:
-        st.info("Generate a plan first so DeepEval can evaluate the actual schedule.")
 
